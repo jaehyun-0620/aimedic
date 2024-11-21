@@ -3,7 +3,7 @@ import pandas as pd
 import tensorflow as tf
 from sklearn.model_selection import train_test_split
 
-
+ 
 """
     학습 및 검증 데이터 준비를 위한 함수
     Args:
