@@ -1,0 +1,257 @@
+import os
+import pandas as pd
+import tensorflow as tf
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, models
+from sklearn.model_selection import train_test_split
+from sklearn.utils import resample
+import numpy as np
+from tensorflow.keras.applications import ResNet50, DenseNet121, MobileNetV2, VGG16
+from sklearn.metrics import confusion_matrix, roc_auc_score, precision_score, recall_score, mean_squared_error, \
+    roc_curve
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+
+# 설정
+base_image_dir = '../project1/train-image/image'
+original_csv_dir = './original_datasets'
+client_data_dir = './client_datasets'
+image_size = (128, 128)
+batch_size = 64
+epochs = 10
+global_epochs = 5
+model_save_dir = './saved_models'
+target_count = 1000
+
+# 데이터 균형화 함수
+def balance_classes(df):
+    benign_df = df[df['target'] == 0]
+    malignant_df = df[df['target'] == 1]
+
+    if benign_df.empty:
+        print("Error: No benign data available.")
+        return pd.DataFrame()
+
+    if malignant_df.empty:
+        print("Error: No malignant data available.")
+        return pd.DataFrame()
+
+    if len(benign_df) > target_count:
+        benign_df = benign_df.sample(n=target_count, random_state=42)
+    else:
+        print(f"Warning: Benign data has less samples than {target_count}. Using all {len(benign_df)} samples.")
+
+    if len(malignant_df) < target_count:
+        malignant_df = resample(
+            malignant_df,
+            replace=True,
+            n_samples=target_count,
+            random_state=42
+        )
+    elif len(malignant_df) > target_count:
+        malignant_df = malignant_df.sample(n=target_count, random_state=42)
+
+    balanced_df = pd.concat([benign_df, malignant_df])
+    balanced_df['target'] = balanced_df['target'].astype(str)
+    return balanced_df.sample(frac=1).reset_index(drop=True)
+
+# 데이터 준비
+def prepare_client_datasets():
+    csv_files = [f for f in os.listdir(original_csv_dir) if f.endswith('.csv')]
+    os.makedirs(client_data_dir, exist_ok=True)
+
+    for csv_file in csv_files:
+        print(f"Processing {csv_file}...")
+        df = pd.read_csv(os.path.join(original_csv_dir, csv_file), low_memory=False)
+        df['image_path'] = df['isic_id'].apply(lambda x: os.path.join(base_image_dir, f"{x}.jpg"))
+        df['target'] = df['target'].astype(str)
+
+        balanced_df = balance_classes(df)
+
+        if balanced_df.empty:
+            print(f"Skipping {csv_file} due to insufficient data.")
+            continue
+
+        train_df, temp_df = train_test_split(balanced_df, test_size=0.4, random_state=42)
+        val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
+
+        client_dir = os.path.join(client_data_dir, os.path.splitext(csv_file)[0])
+        os.makedirs(client_dir, exist_ok=True)
+        train_df.to_csv(os.path.join(client_dir, 'train.csv'), index=False)
+        val_df.to_csv(os.path.join(client_dir, 'val.csv'), index=False)
+        test_df.to_csv(os.path.join(client_dir, 'test.csv'), index=False)
+        print(f"Saved datasets for {csv_file} in {client_dir}.")
+
+# 데이터 로드 및 생성기
+def load_data_generator(client_dir):
+    train_df = pd.read_csv(os.path.join(client_dir, 'train.csv'))
+    val_df = pd.read_csv(os.path.join(client_dir, 'val.csv'))
+    test_df = pd.read_csv(os.path.join(client_dir, 'test.csv'))
+
+    train_df['target'] = train_df['target'].astype(str)
+    val_df['target'] = val_df['target'].astype(str)
+    test_df['target'] = test_df['target'].astype(str)
+
+    train_datagen = ImageDataGenerator(
+        rescale=1.0 / 255.0,
+        rotation_range=15,
+        width_shift_range=0.2,
+        height_shift_range=0.2,
+        shear_range=0.2,
+        zoom_range=0.2,
+        horizontal_flip=True,
+        fill_mode='nearest'
+    )
+    test_datagen = ImageDataGenerator(rescale=1.0 / 255.0)
+
+    train_generator = train_datagen.flow_from_dataframe(
+        train_df, x_col='image_path', y_col='target', target_size=image_size, batch_size=batch_size, class_mode='binary'
+    )
+    val_generator = test_datagen.flow_from_dataframe(
+        val_df, x_col='image_path', y_col='target', target_size=image_size, batch_size=batch_size, class_mode='binary'
+    )
+    test_generator = test_datagen.flow_from_dataframe(
+        test_df, x_col='image_path', y_col='target', target_size=image_size, batch_size=batch_size, class_mode='binary'
+    )
+
+    return train_generator, val_generator, test_generator
+
+# 모델 생성
+def create_model(model_type):
+    if model_type == "ResNet":
+        base_model = ResNet50(include_top=False, weights=None, input_shape=(128, 128, 3))
+    elif model_type == "DenseNet":
+        base_model = DenseNet121(include_top=False, weights=None, input_shape=(128, 128, 3))
+    elif model_type == "MobileNet":
+        base_model = MobileNetV2(include_top=False, weights=None, input_shape=(128, 128, 3))
+    elif model_type == "VGG":
+        base_model = VGG16(include_top=False, weights=None, input_shape=(128, 128, 3))
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    model = models.Sequential([
+        base_model,
+        layers.GlobalAveragePooling2D(),
+        layers.Dense(128, activation='relu'),
+        layers.Dropout(0.5),
+        layers.Dense(1, activation='sigmoid')
+    ])
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
+
+# 연합학습
+def federated_learning(client_dirs, model_type):
+    global_model = create_model(model_type)
+    os.makedirs(model_save_dir, exist_ok=True)
+    model_save_path = os.path.join(model_save_dir, f"{model_type}_best_model.h5")
+
+    best_global_accuracy = 0.0
+    best_global_weights = None
+
+    for epoch in range(global_epochs):
+        print(f"Global Epoch {epoch + 1}/{global_epochs} for {model_type}")
+        client_weights = []
+
+        for client_id, client_dir in enumerate(client_dirs):
+            print(f"Training on Client {client_id + 1} for {model_type}...")
+            train_gen, val_gen, test_gen = load_data_generator(client_dir)
+
+            client_model = create_model(model_type)
+            client_model.set_weights(global_model.get_weights())
+
+            client_model.fit(train_gen, validation_data=val_gen, epochs=epochs, verbose=1)
+            client_weights.append(client_model.get_weights())
+
+        new_weights = [np.mean(w, axis=0) for w in zip(*client_weights)]
+        global_model.set_weights(new_weights)
+
+        global_accuracy = []
+        for client_dir in client_dirs:
+            _, _, test_gen = load_data_generator(client_dir)
+            _, acc = global_model.evaluate(test_gen, verbose=0)
+            global_accuracy.append(acc)
+        avg_acc = np.mean(global_accuracy)
+        print(f"Global Accuracy for {model_type} after Epoch {epoch + 1}: {avg_acc:.4f}")
+
+        if avg_acc > best_global_accuracy:
+            best_global_accuracy = avg_acc
+            best_global_weights = global_model.get_weights()
+            print(f"New best model for {model_type} with accuracy: {best_global_accuracy:.4f}")
+
+    if best_global_weights is not None:
+        global_model.set_weights(best_global_weights)
+        global_model.save(model_save_path)
+        print(f"Best global model for {model_type} saved at {model_save_path}")
+# 평가 및 시각화 함수
+def evaluate_model(model, test_generator, model_name):
+    """
+    모델 평가 및 시각화
+    - model: 평가할 모델
+    - test_generator: 테스트 데이터 생성기
+    - model_name: 모델 이름 (ResNet, DenseNet 등)
+    """
+    # 예측 및 실제 값
+    y_true = test_generator.classes  # 실제 클래스
+    y_pred_proba = model.predict(test_generator)  # 예측 확률
+    y_pred = (y_pred_proba > 0.5).astype(int)  # 0.5 기준 이진화
+
+    # 혼동 행렬 계산
+    cm = confusion_matrix(y_true, y_pred)
+    tn, fp, fn, tp = cm.ravel()  # True Negative, False Positive, False Negative, True Positive
+
+    # 추가 지표 계산
+    auc = roc_auc_score(y_true, y_pred_proba)
+    precision = precision_score(y_true, y_pred)
+    recall = recall_score(y_true, y_pred)
+    mse = mean_squared_error(y_true, y_pred_proba)
+
+    # 결과 출력
+    print(f"\nEvaluation Results for {model_name}:")
+    print(f"Loss: {model.evaluate(test_generator, verbose=0)[0]:.4f}")
+    print(f"AUC: {auc:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"True Positive: {tp}, True Negative: {tn}")
+    print(f"False Positive: {fp}, False Negative: {fn}")
+    print(f"MSE: {mse:.4f}")
+
+    # 시각화
+    plt.figure(figsize=(10, 5))
+
+    # ROC Curve 시각화
+    plt.subplot(1, 2, 1)
+    fpr, tpr, _ = roc_curve(y_true, y_pred_proba)
+    plt.plot(fpr, tpr, label=f"AUC = {auc:.4f}")
+    plt.plot([0, 1], [0, 1], linestyle='--', color='r')
+    plt.title(f"ROC Curve for {model_name}")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.legend()
+
+    # Confusion Matrix 시각화
+    plt.subplot(1, 2, 2)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.title(f"Confusion Matrix for {model_name}")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+
+    plt.tight_layout()
+    plt.show()
+
+
+# 실행
+prepare_client_datasets()
+client_dirs = [os.path.join(client_data_dir, d) for d in os.listdir(client_data_dir) if os.path.isdir(os.path.join(client_data_dir, d))]
+
+for model in ["ResNet", "DenseNet", "MobileNet", "VGG"]:
+    federated_learning(client_dirs, model)
+
+# 최종 평가
+for model_type in ["MobileNet", "VGG"]:
+    model_path = os.path.join(model_save_dir, f"{model_type}_best_model.h5")
+    if os.path.exists(model_path):
+        print(f"\nEvaluating {model_type}...")
+        model = tf.keras.models.load_model(model_path)
+        _, _, test_generator = load_data_generator(client_dirs[0])  # 첫 번째 클라이언트 데이터로 테스트
+        evaluate_model(model, test_generator, model_type)
