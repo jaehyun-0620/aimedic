@@ -1,0 +1,66 @@
+import os
+import pandas as pd
+import tensorflow as tf
+from sklearn.model_selection import train_test_split
+from tensorflow import keras
+from tensorflow.keras import layers
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# 메타 데이터를 로드합니다. 예시로 CSV 파일을 사용한다고 가정합니다.
+df = pd.read_csv('../project1/train-metadata.csv')
+
+# 'anatom_site_general' 열에 있는 고유 값들을 확인합니다.
+unique_anatomical_sites = df['anatom_site_general'].unique()
+
+# 고유 값들을 출력합니다.
+print(unique_anatomical_sites)
+
+unique_sites = df['anatom_site_general'].unique()
+
+# 데이터 나누기
+site_datasets = {}
+for site in unique_sites:
+    site_datasets[site] = df[df['anatom_site_general'] == site]
+
+# 각 부위별로 저장
+for site, data in site_datasets.items():
+    # NaN 값 확인 및 처리
+    if isinstance(site, str):  # site가 문자열인 경우에만 처리
+        site_name = site.replace('/', '_')
+    else:  # NaN 값 처리
+        site_name = 'unknown'
+
+# 데이터 저장
+data.to_csv(f'train_meta_{site_name}.csv', index=False)
+
+data = df[['anatom_site_general', 'target']]
+
+data['anatom_site_general'] = data['anatom_site_general'].fillna('unknown')
+
+# 그룹화하여 target 비율 계산
+target_ratio = data.groupby('anatom_site_general')['target'].value_counts(normalize=True).unstack()
+
+# 비율 확인
+print(target_ratio)
+
+
+
+# 스택형 막대그래프 그리기
+target_ratio.plot(kind='bar', stacked=True, figsize=(10, 6))
+plt.title('Target Proportion by Anatomical Site')
+plt.ylabel('Proportion')
+plt.xlabel('Anatomical Site')
+plt.legend(title='Target', labels=['Benign (0)', 'Malignant (1)'])
+plt.xticks(rotation=45)
+plt.tight_layout()
+plt.show()
+
+# NaN 값을 처리 (선택적으로 'unknown'으로 대체)
+data['anatom_site_general'] = data['anatom_site_general'].fillna('unknown')
+
+# 그룹화하여 target 개수 계산
+target_count = data.groupby('anatom_site_general')['target'].value_counts().unstack()
+
+# 개수 확인
+print(target_count)
