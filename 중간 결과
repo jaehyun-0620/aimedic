@@ -1,0 +1,30 @@
+Evaluation Results for ResNet:
+Loss: 0.5393
+AUC: 0.8713
+Precision: 0.8039
+Recall: 0.8200
+True Positive: 164, True Negative: 160
+False Positive: 40, False Negative: 36
+MSE: 0.1515
+
+
+
+Evaluation Results for DenseNet:
+Loss: 0.6610
+AUC: 0.8437
+Precision: 0.8590
+Recall: 0.6700
+True Positive: 134, True Negative: 178
+False Positive: 22, False Negative: 66
+MSE: 0.1754
+
+
+
+Evaluation Results for VGG:
+Loss: 0.6344
+AUC: 0.7524
+Precision: 0.8909
+Recall: 0.4900
+True Positive: 98, True Negative: 188
+False Positive: 12, False Negative: 102
+MSE: 0.2212
