@@ -1,0 +1,117 @@
+import os
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix, roc_auc_score, roc_curve, classification_report
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+import seaborn as sns
+
+# 설정
+model_save_dir = './saved_models'
+client_data_dir = './client_datasets'
+batch_size = 32
+default_image_size = (128, 128)  # 기본 입력 크기 (ResNet, SimpleCNN, DenseNet)
+vgg_image_size = (224, 224)      # VGG 입력 크기
+
+# 데이터 로드 및 생성기
+def load_combined_test_data(client_data_dir, model_type):
+    # 모델 타입에 따른 이미지 크기 설정
+    image_size = vgg_image_size if model_type == "VGG" else default_image_size
+
+    # 모든 클라이언트의 test.csv 병합
+    test_dfs = []
+    for client_dir in os.listdir(client_data_dir):
+        client_test_path = os.path.join(client_data_dir, client_dir, 'test.csv')
+        if os.path.exists(client_test_path):
+            test_df = pd.read_csv(client_test_path)
+            test_dfs.append(test_df)
+
+    combined_test_df = pd.concat(test_dfs, ignore_index=True)
+    print(f"Combined test.csv size: {combined_test_df.shape}")
+
+    # target 열을 문자열로 변환
+    combined_test_df['target'] = combined_test_df['target'].astype(str)
+
+    # 데이터 생성기
+    test_datagen = ImageDataGenerator(rescale=1.0 / 255.0)
+    test_generator = test_datagen.flow_from_dataframe(
+        combined_test_df, x_col='image_path', y_col='target',
+        target_size=image_size, batch_size=batch_size, class_mode='binary', shuffle=False
+    )
+
+    return test_generator, combined_test_df
+
+# 평가 함수
+def evaluate_saved_model(saved_model_path, client_data_dir, model_type, model_name):
+    print(f"Evaluating model: {model_name}")
+
+    # 모델 로드
+    model = load_model(saved_model_path)
+
+    # 테스트 데이터 로드
+    test_generator, combined_test_df = load_combined_test_data(client_data_dir, model_type)
+
+    # 예측
+    y_true = test_generator.classes  # 실제 클래스
+    y_pred_proba = model.predict(test_generator)  # 예측 확률
+    y_pred = (y_pred_proba > 0.5).astype(int).flatten()  # 0.5 기준 이진화
+
+    # 평가 지표 계산
+    cm = confusion_matrix(y_true, y_pred)
+    report = classification_report(y_true, y_pred, target_names=["Benign", "Malignant"])
+    auc = roc_auc_score(y_true, y_pred_proba)
+    fpr, tpr, _ = roc_curve(y_true, y_pred_proba)
+
+    # 결과 출력
+    print("\nConfusion Matrix:")
+    print(cm)
+    print("\nClassification Report:")
+    print(report)
+    print(f"AUC: {auc:.4f}")
+
+    # 시각화
+    plt.figure(figsize=(12, 6))
+
+    # ROC Curve
+    plt.subplot(1, 2, 1)
+    plt.plot(fpr, tpr, label=f"AUC = {auc:.4f}")
+    plt.plot([0, 1], [0, 1], linestyle='--', color='r')
+    plt.title(f"ROC Curve for {model_name}")
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.legend()
+
+    # Confusion Matrix Heatmap
+    plt.subplot(1, 2, 2)
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=["Benign", "Malignant"], yticklabels=["Benign", "Malignant"])
+    plt.title(f"Confusion Matrix for {model_name}")
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+
+    plt.tight_layout()
+    plt.show()
+
+# 실행
+if __name__ == "__main__":
+    # 저장된 모델 이름과 타입 매핑
+    model_names = [
+        # "ResNet_mean_best_model", "ResNet_fedavg_best_model", "ResNet_maxweight_best_model",
+        # "SimpleCNN_mean_best_model", "SimpleCNN_fedavg_best_model", "SimpleCNN_maxweight_best_model",
+        # "DenseNet_mean_best_model", "DenseNet_fedavg_best_model", "DenseNet_maxweight_best_model"
+        "VGG_mean_best_model", "VGG_fedavg_best_model", "VGG_maxweight_best_model"
+    ]
+    model_types = {
+        # "ResNet_mean_best_model": "ResNet", "ResNet_fedavg_best_model": "ResNet", "ResNet_maxweight_best_model": "ResNet",
+        # "SimpleCNN_mean_best_model": "SimpleCNN", "SimpleCNN_fedavg_best_model": "SimpleCNN", "SimpleCNN_maxweight_best_model": "SimpleCNN",
+        # "DenseNet_mean_best_model": "DenseNet", "DenseNet_fedavg_best_model": "DenseNet", "DenseNet_maxweight_best_model": "DenseNet"
+        "VGG_mean_best_model": "VGG", "VGG_fedavg_best_model": "VGG", "VGG_maxweight_best_model": "VGG"
+    }
+
+    # 모델별 평가 실행
+    for model_name in model_names:
+        saved_model_path = os.path.join(model_save_dir, model_name)
+        if os.path.exists(saved_model_path):
+            evaluate_saved_model(saved_model_path, client_data_dir, model_types[model_name], model_name)
+        else:
+            print(f"Model not found: {model_name}")
